@@ -1,4 +1,4 @@
-/*! angular-reconnecting-websocket - v0.1.0 - 2013-12-16
+/*! angular-reconnecting-websocket - v0.1.0 - 2016-04-08
 MIT License:
 
 Copyright (c) 2010-2012, Joe Walnes
@@ -234,8 +234,8 @@ function ReconnectingWebSocketProvider($timeout) {
 
     // force closure of the ReconnectingWebSocket
     this.close = function() {
+      forcedClose = true;
       if (ws) {
-        forcedClose = true;
         ws.close();
       }
     };

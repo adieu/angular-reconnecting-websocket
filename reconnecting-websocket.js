@@ -235,8 +235,8 @@ function ReconnectingWebSocketProvider($timeout) {
 
     // force closure of the ReconnectingWebSocket
     this.close = function() {
+      forcedClose = true;
       if (ws) {
-        forcedClose = true;
         ws.close();
       }
     };
