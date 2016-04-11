@@ -1,6 +1,28 @@
+// MIT License:
+//
+// Copyright (c) 2010-2012, Joe Walnes
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
 /**
  * This behaves like a WebSocket in every way, except if it fails to connect,
- * or it gets disconnected, it will repeatedly poll until it succesfully connects
+ * or it gets disconnected, it will repeatedly poll until it successfully connects
  * again.
  *
  * It is API compatible, so when you have:
@@ -20,233 +42,327 @@
  *  onmessage
  *  etc...
  *
- * It is API compatible with the standard WebSocket API.
+ * It is API compatible with the standard WebSocket API, apart from the following members:
+ *
+ * - `bufferedAmount`
+ * - `extensions`
+ * - `binaryType`
  *
  * Latest version: https://github.com/joewalnes/reconnecting-websocket/
  * - Joe Walnes
+ *
+ * Syntax
+ * ======
+ * var socket = new ReconnectingWebSocket(url, protocols, options);
+ *
+ * Parameters
+ * ==========
+ * url - The url you are connecting to.
+ * protocols - Optional string or array of protocols.
+ * options - See below
+ *
+ * Options
+ * =======
+ * Options can either be passed upon instantiation or set after instantiation:
+ *
+ * var socket = new ReconnectingWebSocket(url, null, { debug: true, reconnectInterval: 4000 });
+ *
+ * or
+ *
+ * var socket = new ReconnectingWebSocket(url);
+ * socket.debug = true;
+ * socket.reconnectInterval = 4000;
+ *
+ * debug
+ * - Whether this instance should log debug messages. Accepts true or false. Default: false.
+ *
+ * automaticOpen
+ * - Whether or not the websocket should attempt to connect immediately upon instantiation. The socket can be manually opened or closed at any time using ws.open() and ws.close().
+ *
+ * reconnectInterval
+ * - The number of milliseconds to delay before attempting to reconnect. Accepts integer. Default: 1000.
+ *
+ * maxReconnectInterval
+ * - The maximum number of milliseconds to delay a reconnection attempt. Accepts integer. Default: 30000.
+ *
+ * reconnectDecay
+ * - The rate of increase of the reconnect delay. Allows reconnect attempts to back off when problems persist. Accepts integer or float. Default: 1.5.
+ *
+ * timeoutInterval
+ * - The maximum time in milliseconds to wait for a connection to succeed before closing and retrying. Accepts integer. Default: 2000.
+ *
  */
-function ReconnectingWebSocketProvider($timeout) {
-
-  var ReconnectingWebSocket = function (url, protocols) {
-    protocols = protocols || [];
-
-    // These can be altered by calling code.
-    this.debug = false;
-
-    // how long to wait before considering connecting to be impossible
-    this.timeoutInterval = 2000;
-
-    // initial wait between reconnection attempts
-    this.reconnectInterval = this.initialReconnectInterval = 5000;
-
-    // maximum wait between attempts. Continue to space reconnections until
-    // they're five minutes apart.
-    this.maxReconnectInterval = 5 * 60 * 1000;
-
-    // internal counter of reconnection attempts so far
-    var retries = 0;
-
-    this.url = url;
-    this.protocols = protocols;
-    this.URL = url; // Public API
-
-    // callbacks, should be overridden if needed
-    this.onopen = function() { };
-    this.onclose = function() { };
-    this.onconnecting = function() { };
-    this.onmessage = function() { };
-    this.onerror = function() { };
-
-    // custom callback, not present in WebSocket, let browser know a reconnection attempt is coming.
-    this.onreconnect = function () {};
-
-    // internal vars
-    var ws;
-    var forcedClose = false;
-    var timedOut = false;
-
-    // handle this inside local functions
-    var self = this;
-
-    var dbg = function () {
-      if (self.debug || ReconnectingWebSocket.debugAll) {
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('[ReconnectingWebSocket]')
-        console.debug.apply(console, args);
-      }
+function ReconnectingWebSocketProvider() {
+    if (!('WebSocket' in window)) {
+        return;
     }
 
-    var resetReconnectInterval = function () {
-      dbg('resetting reconnection interval');
-      retries = 0;
-      self.reconnectInterval = self.initialReconnectInterval;
-    }
+    function ReconnectingWebSocket(url, protocols, options) {
 
-    // modify reconnectInterval in place
-    var updateReconnectInterval = function () {
-      // http://dthain.blogspot.com/2009/02/exponential-backoff-in-distributed.html
-      //
-      // delay = MIN( R * T * F ^ N , M )
-      //
-      //   R should be a random number in the range [1-2], so that its
-      //     effect is to spread out the load over time, but always more
-      //     conservative than plain backoff.
-      //
-      //   T is the initial timeout, and should be set at the outer limits
-      //     of expected response time for the service. For example, if your
-      //     service responds in 1ms on average but in 10ms for 99% of
-      //     requests, then set t=10ms.
-      //
-      //   F doesn't matter much, so choose 2 as a nice round number. (It's
-      //     the exponential nature that counts.)
-      //
-      //   N is the current number of retries
-      //
-      //   M should be as low as possible to keep your customers happy, but
-      //     high enough that the system can definitely handle requests from
-      //     all clients at that sustained rate.
-      //
+        // Default settings
+        var settings = {
 
-      var R = Math.random() + 1,
-          T = self.initialReconnectInterval,
-          F = 2,
-          N = retries,
-          M = self.maxReconnectInterval;
+            /** Whether this instance should log debug messages. */
+            debug: false,
 
-      dbg('updating reconnectInterval with', R, T, F, N, M);
+            /** Whether or not the websocket should attempt to connect immediately upon instantiation. */
+            automaticOpen: true,
 
-      self.reconnectInterval = Math.min(R * T * Math.pow(F, N), M);
-      dbg('reconnectInterval updated', self.reconnectInterval, 'attempt', retries);
-      retries++;
-    }
+            /** The number of milliseconds to delay before attempting to reconnect. */
+            reconnectInterval: 1000,
+            /** The maximum number of milliseconds to delay a reconnection attempt. */
+            maxReconnectInterval: 30000,
+            /** The rate of increase of the reconnect delay. Allows reconnect attempts to back off when problems persist. */
+            reconnectDecay: 1.5,
 
-    // open a new connection
-    var connect = function (reconnectAttempt) {
-      ws = new WebSocket(url, protocols);
-      self.readyState = ws.readyState;
+            /** The maximum time in milliseconds to wait for a connection to succeed before closing and retrying. */
+            timeoutInterval: 2000,
 
-      // connection is opening, tell public api
-      self.onconnecting();
+            /** The maximum number of reconnection attempts to make. Unlimited if null. */
+            maxReconnectAttempts: null,
 
-      dbg('attempt to connect', url);
-
-      var localWs = ws;
-
-      // force close event if failed to connect after self.timeoutInterval milliseconds
-      var timeout = setTimeout(function() {
-        dbg('connection timeout', url);
-
-        // flag this close event as being a locally forced timeout
-        timedOut = true;
-        localWs.close();
-        timedOut = false;
-
-      }, self.timeoutInterval);
-
-      ws.onopen = function(event) {
-        dbg('ws.onopen', url);
-
-        self.readyState = ws.readyState;
-
-        // cancel failure to connect timeout
-        clearTimeout(timeout);
-
-        // success! reconnection happened, so we cleanup after ourselves
-        resetReconnectInterval();
-
-        reconnectAttempt = false;
-        $timeout(function(){
-          self.onopen(event);
-        });
-      };
-
-      ws.onclose = function(event) {
-        dbg('ws.onclose');
-
-        self.readyState = ws.readyState;
-
-        // cancel the local reconnect timeout if socket closed (or failed to
-        // open) before the timeout triggered
-        clearTimeout(timeout);
-
-        ws = null;
-        if (forcedClose) {
-          // forced closure, DO NOT RETRY
-          self.onclose(event);
-        } else {
-          // do retry
-
-          // override WebSocket readyState
-          self.readyState = WebSocket.CONNECTING;
-
-          // trigger public onconnecting
-          $timeout(function(){
-            self.onconnecting();
-          });
-
-          // if this is not a recursive reconnection call or a timeout, trigger public onclose
-          if (!(reconnectAttempt || timedOut)) {
-            dbg('onclose', url);
-            $timeout(function(){
-              self.onclose(event);
-            });
-          }
-
-          // + 1 to include the original connection
-          $timeout(function(){
-            self.onreconnect(retries + 1, self.reconnectInterval);
-          });
-
-          // and attempt a reconnection after reconnectInterval
-          setTimeout(function() {
-            connect(true);
-            updateReconnectInterval();
-          }, self.reconnectInterval);
+            /** The binary type, possible values 'blob' or 'arraybuffer', default 'blob'. */
+            binaryType: 'blob'
+        };
+        if (!options) {
+            options = {};
         }
-      };
 
-      ws.onmessage = function(event) {
-        dbg('ws.onmessage', url, event.data);
-        $timeout(function(){
-          self.onmessage(event);
-        });
-      };
+        // Overwrite and define settings with options if they exist.
+        for (var key in settings) {
+            if (typeof options[key] !== 'undefined') {
+                this[key] = options[key];
+            } else {
+                this[key] = settings[key];
+            }
+        }
 
-      ws.onerror = function(event) {
-        // don't do anything on an error, just report it
-        dbg('ws.onerror', url, event);
-        $timeout(function(){
-          self.onerror(event);
+        // These should be treated as read-only properties
+
+        /** The URL as resolved by the constructor. This is always an absolute URL. Read only. */
+        this.url = url;
+
+        /** The number of attempted reconnects since starting, or the last successful connection. Read only. */
+        this.reconnectAttempts = 0;
+
+        /**
+         * The current state of the connection.
+         * Can be one of: WebSocket.CONNECTING, WebSocket.OPEN, WebSocket.CLOSING, WebSocket.CLOSED
+         * Read only.
+         */
+        this.readyState = WebSocket.CONNECTING;
+
+        /**
+         * A string indicating the name of the sub-protocol the server selected; this will be one of
+         * the strings specified in the protocols parameter when creating the WebSocket object.
+         * Read only.
+         */
+        this.protocol = null;
+
+        // Private state variables
+
+        var self = this;
+        var ws;
+        var forcedClose = false;
+        var timedOut = false;
+        var eventTarget = document.createElement('div');
+
+        // Wire up "on*" properties as event handlers
+
+        eventTarget.addEventListener('open', function (event) {
+            self.onopen(event);
         });
-      };
+        eventTarget.addEventListener('close', function (event) {
+            self.onclose(event);
+        });
+        eventTarget.addEventListener('connecting', function (event) {
+            self.onconnecting(event);
+        });
+        eventTarget.addEventListener('message', function (event) {
+            self.onmessage(event);
+        });
+        eventTarget.addEventListener('error', function (event) {
+            self.onerror(event);
+        });
+
+        // Expose the API required by EventTarget
+
+        this.addEventListener = eventTarget.addEventListener.bind(eventTarget);
+        this.removeEventListener = eventTarget.removeEventListener.bind(eventTarget);
+        this.dispatchEvent = eventTarget.dispatchEvent.bind(eventTarget);
+
+        /**
+         * This function generates an event that is compatible with standard
+         * compliant browsers and IE9 - IE11
+         *
+         * This will prevent the error:
+         * Object doesn't support this action
+         *
+         * http://stackoverflow.com/questions/19345392/why-arent-my-parameters-getting-passed-through-to-a-dispatched-event/19345563#19345563
+         * @param s String The name that the event should use
+         * @param args Object an optional object that the event will use
+         */
+        function generateEvent(s, args) {
+            var evt = document.createEvent("CustomEvent");
+            evt.initCustomEvent(s, false, false, args);
+            return evt;
+        }
+
+        this.open = function (reconnectAttempt) {
+            ws = new WebSocket(self.url, protocols || []);
+            ws.binaryType = this.binaryType;
+
+            if (reconnectAttempt) {
+                if (this.maxReconnectAttempts && this.reconnectAttempts > this.maxReconnectAttempts) {
+                    return;
+                }
+            } else {
+                eventTarget.dispatchEvent(generateEvent('connecting'));
+                this.reconnectAttempts = 0;
+            }
+
+            if (self.debug || ReconnectingWebSocket.debugAll) {
+                console.debug('ReconnectingWebSocket', 'attempt-connect', self.url);
+            }
+
+            var localWs = ws;
+            var timeout = setTimeout(function () {
+                if (self.debug || ReconnectingWebSocket.debugAll) {
+                    console.debug('ReconnectingWebSocket', 'connection-timeout', self.url);
+                }
+                timedOut = true;
+                localWs.close();
+                timedOut = false;
+            }, self.timeoutInterval);
+
+            ws.onopen = function (event) {
+                clearTimeout(timeout);
+                if (self.debug || ReconnectingWebSocket.debugAll) {
+                    console.debug('ReconnectingWebSocket', 'onopen', self.url);
+                }
+                self.protocol = ws.protocol;
+                self.readyState = WebSocket.OPEN;
+                self.reconnectAttempts = 0;
+                var e = generateEvent('open');
+                e.isReconnect = reconnectAttempt;
+                reconnectAttempt = false;
+                eventTarget.dispatchEvent(e);
+            };
+
+            ws.onclose = function (event) {
+                clearTimeout(timeout);
+                ws = null;
+                if (forcedClose) {
+                    self.readyState = WebSocket.CLOSED;
+                    eventTarget.dispatchEvent(generateEvent('close'));
+                } else {
+                    self.readyState = WebSocket.CONNECTING;
+                    var e = generateEvent('connecting');
+                    e.code = event.code;
+                    e.reason = event.reason;
+                    e.wasClean = event.wasClean;
+                    eventTarget.dispatchEvent(e);
+                    if (!reconnectAttempt && !timedOut) {
+                        if (self.debug || ReconnectingWebSocket.debugAll) {
+                            console.debug('ReconnectingWebSocket', 'onclose', self.url);
+                        }
+                        eventTarget.dispatchEvent(generateEvent('close'));
+                    }
+
+                    var timeoutTime = self.reconnectInterval * Math.pow(self.reconnectDecay, self.reconnectAttempts);
+                    setTimeout(function () {
+                        self.reconnectAttempts++;
+                        self.open(true);
+                    }, timeoutTime > self.maxReconnectInterval ? self.maxReconnectInterval : timeoutTime);
+                }
+            };
+            ws.onmessage = function (event) {
+                if (self.debug || ReconnectingWebSocket.debugAll) {
+                    console.debug('ReconnectingWebSocket', 'onmessage', self.url, event.data);
+                }
+                var e = generateEvent('message');
+                e.data = event.data;
+                eventTarget.dispatchEvent(e);
+            };
+            ws.onerror = function (event) {
+                if (self.debug || ReconnectingWebSocket.debugAll) {
+                    console.debug('ReconnectingWebSocket', 'onerror', self.url, event);
+                }
+                eventTarget.dispatchEvent(generateEvent('error'));
+            };
+        };
+
+        // Whether or not to create a websocket upon instantiation
+        if (this.automaticOpen === true) {
+            this.open(false);
+        }
+
+        /**
+         * Transmits data to the server over the WebSocket connection.
+         *
+         * @param data a text string, ArrayBuffer or Blob to send to the server.
+         */
+        this.send = function (data) {
+            if (ws) {
+                if (self.debug || ReconnectingWebSocket.debugAll) {
+                    console.debug('ReconnectingWebSocket', 'send', self.url, data);
+                }
+                return ws.send(data);
+            } else {
+                throw 'INVALID_STATE_ERR : Pausing to reconnect websocket';
+            }
+        };
+
+        /**
+         * Closes the WebSocket connection or connection attempt, if any.
+         * If the connection is already CLOSED, this method does nothing.
+         */
+        this.close = function (code, reason) {
+            // Default CLOSE_NORMAL code
+            if (typeof code === 'undefined') {
+                code = 1000;
+            }
+            forcedClose = true;
+            if (ws) {
+                ws.close(code, reason);
+            }
+        };
+
+        /**
+         * Additional public API method to refresh the connection if still open (close, re-open).
+         * For example, if the app suspects bad data / missed heart beats, it can try to refresh.
+         */
+        this.refresh = function () {
+            if (ws) {
+                ws.close();
+            }
+        };
     }
 
-    // immediately attempt to connect to the given websocket URL
-    connect(url);
+    /**
+     * An event listener to be called when the WebSocket connection's readyState changes to OPEN;
+     * this indicates that the connection is ready to send and receive data.
+     */
+    ReconnectingWebSocket.prototype.onopen = function (event) {};
+    /** An event listener to be called when the WebSocket connection's readyState changes to CLOSED. */
+    ReconnectingWebSocket.prototype.onclose = function (event) {};
+    /** An event listener to be called when a connection begins being attempted. */
+    ReconnectingWebSocket.prototype.onconnecting = function (event) {};
+    /** An event listener to be called when a message is received from the server. */
+    ReconnectingWebSocket.prototype.onmessage = function (event) {};
+    /** An event listener to be called when an error occurs. */
+    ReconnectingWebSocket.prototype.onerror = function (event) {};
 
-    this.send = function(data) {
-      if (ws) {
-        dbg('this.send', url, data);
-        return ws.send(data);
-      } else {
-        throw new Error('INVALID_STATE_ERR : Pausing to reconnect websocket');
-      }
-    };
+    /**
+     * Whether all instances of ReconnectingWebSocket should log debug messages.
+     * Setting this to true is the equivalent of setting all instances of ReconnectingWebSocket.debug to true.
+     */
+    ReconnectingWebSocket.debugAll = false;
 
-    // force closure of the ReconnectingWebSocket
-    this.close = function() {
-      forcedClose = true;
-      if (ws) {
-        ws.close();
-      }
-    };
+    ReconnectingWebSocket.CONNECTING = WebSocket.CONNECTING;
+    ReconnectingWebSocket.OPEN = WebSocket.OPEN;
+    ReconnectingWebSocket.CLOSING = WebSocket.CLOSING;
+    ReconnectingWebSocket.CLOSED = WebSocket.CLOSED;
 
-    // force immediate reconnection attempt, even if we're pausing
-    this.refresh = function() {
-      if (ws) {
-        ws.close();
-      }
-    };
-  }
-  return ReconnectingWebSocket;
-};
+    return ReconnectingWebSocket;
+}

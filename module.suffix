@@ -1,6 +1,6 @@
 angular.module('reconnectingWebSocket', [])
   .provider('WebSocket', function () {
 
-    this.$get = ['$timeout', ReconnectingWebSocketProvider];
+    this.$get = [ReconnectingWebSocketProvider];
   });
 })(window, window.angular);
