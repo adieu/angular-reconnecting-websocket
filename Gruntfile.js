@@ -6,7 +6,7 @@ module.exports = function(grunt) {
     pkg: grunt.file.readJSON('package.json'),
     banner: '/*! <%= pkg.title || pkg.name %> - v<%= pkg.version %> - ' +
       '<%= grunt.template.today("yyyy-mm-dd") %>\n' +
-      '<%= grunt.file.read("LICENSE.TXT") %> */\n',
+      '<%= grunt.file.read("LICENSE.txt") %> */\n',
     concat: {
       options: {
         banner: '<%= banner %>',
