@@ -26,11 +26,11 @@ THE SOFTWARE.
 
 function ReconnectingWebSocketProvider($timeout) {
 
-  var ReconnectingWebSocket = function (url, protocols) {
+  var ReconnectingWebSocket = function (url, protocols, options) {
     protocols = protocols || [];
-
-    // These can be altered by calling code.
-    this.debug = false;
+    this.options = angular.merge({
+    	debug: false
+    }, options);
 
     // how long to wait before considering connecting to be impossible
     this.timeoutInterval = 2000;
@@ -68,7 +68,7 @@ function ReconnectingWebSocketProvider($timeout) {
     var self = this;
 
     var dbg = function () {
-      if (self.debug || ReconnectingWebSocket.debugAll) {
+      if (self.options.debug || ReconnectingWebSocket.debugAll) {
         var args = Array.prototype.slice.call(arguments);
         args.unshift('[ReconnectingWebSocket]')
         console.debug.apply(console, args);
@@ -122,6 +122,9 @@ function ReconnectingWebSocketProvider($timeout) {
     // open a new connection
     var connect = function (reconnectAttempt) {
       ws = new WebSocket(url, protocols);
+      if (self.options && self.options.binaryType){
+      	ws.binaryType = self.options.binaryType;
+      }
       self.readyState = ws.readyState;
 
       // connection is opening, tell public api
